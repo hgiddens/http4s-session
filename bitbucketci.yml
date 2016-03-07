@@ -1,0 +1,6 @@
+pipeline:
+  - job:
+      script:
+        - curl -O https://raw.githubusercontent.com/paulp/sbt-extras/master/sbt
+        - chmod +x sbt
+        - ./sbt test
