@@ -4,6 +4,15 @@
 
 A simple project defining [http4s](http://http4s.org) middleware for client-side session management. See the `example` project for a code example.
 
+### Usage
+
+Add the following to your `build.sbt`:
+
+    resolvers += Resolver.bintrayRepo("hgiddens", "maven")
+    libraryDependencies += "com.github.hgiddens" %% "http4s-session-core" % <version>
+
+You can then use the middleware/methods described below.
+
 ### `Session.sessionManagement`
 
 Enables session management for the wrapped `Service`. Sessions are JSON values, and are stored on the client as HTTP cookies – having been signed and encrypted. The signing/encryption is by way of a server secret, which should be a long (e.g. 128 bytes) random string, and which much not be disclosed. Sessions can be invalidated by changing the secret.
