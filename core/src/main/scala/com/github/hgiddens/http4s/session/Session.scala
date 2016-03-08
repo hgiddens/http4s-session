@@ -126,7 +126,7 @@ object Session {
       session <- OptionT(checkSignature(config, sessionCookie))
     } yield session).run
 
-  def middleware(config: SessionConfig): HttpMiddleware =
+  def sessionManagement(config: SessionConfig): HttpMiddleware =
     Middleware { (request, service) =>
       for {
         requestSession <- sessionFromRequest(config, request)
@@ -141,5 +141,11 @@ object Session {
           Task.now(if (requestSession.isDefined) response.removeCookie(config.cookieName) else response)
         )
       } yield responseWithSession
+    }
+
+  def sessionRequired(fallback: Task[Response]): HttpMiddleware =
+    Middleware { (request, service) =>
+      import Syntax._
+      OptionT(request.session).flatMapF(_ => service(request)).getOrElseF(fallback)
     }
 }
