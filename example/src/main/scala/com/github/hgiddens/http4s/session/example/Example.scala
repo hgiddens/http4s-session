@@ -4,6 +4,7 @@ package example
 import Syntax._
 import argonaut.{JsonObject, Json}
 import argonaut.Argonaut._
+import com.github.hgiddens.http4s.middleware.global.Syntax._
 import monocle.Monocle._
 import org.http4s.headers.`Content-Type`
 import org.http4s.{MediaType, EntityEncoder, Cookie}
@@ -65,13 +66,12 @@ object Example extends TaskApp {
       secret = "This is a secret",
       maxAge = 5.minutes
     )
-    val sessionManagement = Session.sessionManagement(config)
-    val sessionRequired = sessionManagement compose Session.sessionRequired(SeeOther(uri("/login")))
     BlazeBuilder.
       bindHttp(port = 8080).
-      mountService(sessionManagement(loginService), "/login").
-      mountService(sessionManagement(logoutService), "/logout").
-      mountService(sessionRequired(protectedService), "/")
+      globalMiddleware(Session.sessionManagement(config)).
+      mountService(loginService, "/login").
+      mountService(logoutService, "/logout").
+      mountService(Session.sessionRequired(SeeOther(uri("/login")))(protectedService), "/")
   }
 
   override def runc =
