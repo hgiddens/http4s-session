@@ -1,7 +1,7 @@
 name := "http4s-session"
 organization in ThisBuild := "com.github.hgiddens"
 
-scalaVersion in ThisBuild := "2.11.7"
+scalaVersion in ThisBuild := "2.11.8"
 scalacOptions in ThisBuild ++= Seq(
   "-deprecation",
   "-unchecked",
