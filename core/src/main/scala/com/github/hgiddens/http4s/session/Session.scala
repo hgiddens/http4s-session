@@ -1,11 +1,11 @@
 package com.github.hgiddens.http4s.session
 
-import argonaut.Argonaut._
+import io.circe.jawn
 import java.util.Date
 import javax.crypto.{Cipher, Mac}
 import javax.crypto.spec.SecretKeySpec
 import javax.xml.bind.DatatypeConverter
-import org.http4s.{DateTime, AttributeKey, Cookie, Request, Response}
+import org.http4s.{AttributeKey, Cookie, Request, Response}
 import org.http4s.Http4s._
 import org.http4s.headers.{Cookie => CookieHeader}
 import org.http4s.server.{Middleware, HttpMiddleware}
@@ -114,10 +114,10 @@ object Session {
   private[session] val responseAttr = AttributeKey[Option[Session] => Option[Session]]("com.github.hgiddens.http4s.session.Session")
 
   private[this] def sessionAsCookie(config: SessionConfig, session: Session): Task[Cookie] =
-    config.cookie(session.nospaces)
+    config.cookie(session.noSpaces)
 
   private[this] def checkSignature(config: SessionConfig, cookie: Cookie): Task[Option[Session]] =
-    config.check(cookie).map(_.flatMap(_.parseOption))
+    config.check(cookie).map(_.flatMap(jawn.parse(_).toOption))
 
   private[this] def sessionFromRequest(config: SessionConfig, request: Request): Task[Option[Session]] =
     (for {

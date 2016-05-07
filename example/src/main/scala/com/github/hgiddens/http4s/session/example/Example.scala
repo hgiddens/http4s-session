@@ -2,14 +2,15 @@ package com.github.hgiddens.http4s.session
 package example
 
 import Syntax._
-import argonaut.{JsonObject, Json}
-import argonaut.Argonaut._
 import com.github.hgiddens.http4s.middleware.global.Syntax._
+import io.circe.{Json, JsonObject}
+import io.circe.optics.all._
+import io.circe.syntax._
 import monocle.Monocle._
-import org.http4s.headers.`Content-Type`
-import org.http4s.{MediaType, EntityEncoder, Cookie}
+import org.http4s.{Cookie, EntityEncoder, HttpService, MediaType}
 import org.http4s.dsl._
-import org.http4s.server.{ServerBuilder, HttpService}
+import org.http4s.headers.`Content-Type`
+import org.http4s.server.ServerBuilder
 import org.http4s.server.blaze.BlazeBuilder
 import scala.concurrent.duration._
 import scala.xml.Elem
@@ -33,7 +34,7 @@ object Example extends TaskApp {
         }
 
       case POST -> Root =>
-        SeeOther(uri("/")).newSession(Json("name" := "J. Doe"))
+        SeeOther(uri("/")).newSession(Json.obj("name" -> "J. Doe".asJson))
     }
 
   def logoutService: HttpService =
@@ -46,7 +47,7 @@ object Example extends TaskApp {
     HttpService {
       case req @ GET -> Root =>
         OptionT(req.session).flatMapF { session =>
-          val name = jObjectPrism ^|-> at[JsonObject, String, Json]("name") ^<-? some ^<-? jStringPrism
+          val name = jsonObject ^|-> at[JsonObject, String, Option[Json]]("name") ^<-? some ^<-? jsonString
           Ok {
             <html>
               <head><title>Protected</title></head>

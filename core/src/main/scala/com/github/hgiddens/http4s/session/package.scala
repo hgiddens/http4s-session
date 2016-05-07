@@ -1,6 +1,6 @@
 package com.github.hgiddens.http4s
 
-import argonaut.Json
+import io.circe.Json
 
 package object session {
   type Session = Json

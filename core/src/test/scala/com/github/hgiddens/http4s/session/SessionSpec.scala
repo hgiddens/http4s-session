@@ -1,32 +1,70 @@
 package com.github.hgiddens.http4s.session
 
 import Generators._
+import JsonHelpers.{json, jsonEncoder}
 import Matchers._
 import Syntax._
-import argonaut.{Json, JsonObject}
-import argonaut.Argonaut._
+import io.circe.{Decoder, Encoder, Json, JsonObject, Printer}
+import io.circe.jawn.CirceSupportParser.facade
+import io.circe.optics.all._
+import io.circe.syntax._
+import java.time.Instant
 import monocle.Monocle
 import monocle.Monocle._
-import org.http4s.argonaut.{json, jsonEncoder}
+import org.http4s.{Cookie, DecodeResult, EntityDecoder, EntityEncoder, HttpService, InvalidMessageBodyFailure, MediaType, Method, Request, Response, Status}
 import org.http4s.dsl._
-import org.http4s.headers.{Cookie => CookieHeader, `Set-Cookie`}
-import org.http4s.server.HttpService
-import org.http4s.{Cookie, DateTime, Method, Request, Response, Status}
-import org.scalacheck.{Arbitrary, Gen, Prop}
+import org.http4s.headers.{`Content-Type`, `Set-Cookie`, Cookie => CookieHeader}
+import org.http4s.util.NonEmptyList
+import org.scalacheck.{Arbitrary, Gen}
 import org.scalacheck.Arbitrary.arbitrary
 import org.specs2.ScalaCheck
-import org.specs2.matcher.Matcher
+import org.specs2.matcher.{Matcher, TaskMatchers}
 import org.specs2.mutable.Specification
 import scala.concurrent.duration._
 import scalaz.Scalaz._
 import scalaz.concurrent.Task
+
+// From http4s
+// This software is licensed under the Apache 2 license, quoted below.
+//
+// Copyright 2013-2014 http4s [http://www.http4s.org]
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not
+// use this file except in compliance with the License. You may obtain a copy of
+// the License at
+//
+//     [http://www.apache.org/licenses/LICENSE-2.0]
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+// License for the specific language governing permissions and limitations under
+// the License.
+object JsonHelpers {
+  implicit val json: EntityDecoder[Json] = org.http4s.jawn.jawnDecoder(facade)
+  def jsonOf[A](implicit decoder: Decoder[A]): EntityDecoder[A] =
+    json.flatMapR { json =>
+      decoder.decodeJson(json).fold(
+        failure =>
+          DecodeResult.failure(InvalidMessageBodyFailure(s"Could not decode JSON: $json", Some(failure))),
+        DecodeResult.success(_)
+      )
+    }
+
+  implicit val jsonEncoder: EntityEncoder[Json] =
+    EntityEncoder[String].contramap[Json] { json =>
+      Printer.noSpaces.pretty(json)
+    }.withContentType(`Content-Type`(MediaType.`application/json`))
+  def jsonEncoderOf[A](implicit encoder: Encoder[A]): EntityEncoder[A] =
+    jsonEncoder.contramap[A](encoder.apply)
+}
 
 object Generators {
   implicit def arbSession: Arbitrary[Session] =
     Arbitrary(for {
       string <- Gen.alphaStr
       number <- arbitrary[Int]
-    } yield Json("string" := string, "number" := number))
+    } yield Json.obj("string" -> string.asJson, "number" -> number.asJson))
 }
 
 object Matchers {
@@ -35,13 +73,14 @@ object Matchers {
   /** Doesn't capture cookies that are being deleted. */
   def setCookies(response: Response): Vector[Cookie] =
     response.headers.collect {
-      case `Set-Cookie`(setCookie) if setCookie.cookie.expires.forall(_ >= DateTime.now) =>
+      case `Set-Cookie`(setCookie) if setCookie.cookie.expires.forall(i => !i.isBefore(Instant.now())) =>
+        //        _ >= java.time.Instant.now()) =>
         setCookie.cookie
     }.toVector
 
   def expiredCookies(response: Response): Vector[Cookie] =
     response.headers.collect {
-      case `Set-Cookie`(setCookie) if setCookie.cookie.expires.exists(_ < DateTime.now) =>
+      case `Set-Cookie`(setCookie) if setCookie.cookie.expires.exists(_.isBefore(Instant.now())) =>
         setCookie.cookie
     }.toVector
 
@@ -56,9 +95,15 @@ object Matchers {
 
   def haveClearedCookie(cookieName: String): Matcher[Response] =
     contain(beCookieWithName(cookieName)) ^^ expiredCookies _
+
+  def haveStatus(status: Status): Matcher[Response] =
+    be_===(status) ^^ ((_: Response).status)
+
+  def haveBody[A: EntityDecoder](a: A): Matcher[Response] =
+    TaskMatchers.returnValue(be_===(a)) ^^ ((_: Response).as[A])
 }
 
-object SessionSpec extends Specification with ScalaCheck {
+object SessionSpec extends Specification with ScalaCheck with TaskMatchers {
   val config = SessionConfig(
     cookieName = "session",
     mkCookie = Cookie(_, _),
@@ -66,7 +111,7 @@ object SessionSpec extends Specification with ScalaCheck {
     maxAge = 5.minutes
   )
 
-  val newSession = Json("created" := true)
+  val newSession = Json.obj("created" -> true.asJson)
 
   "session management" should {
     def sut: HttpService =
@@ -87,110 +132,109 @@ object SessionSpec extends Specification with ScalaCheck {
           } yield response
 
         case GET -> Root / "modify" =>
-          val _number = jObjectPrism ^|-> at[JsonObject, String, Json]("number") ^<-? Monocle.some ^<-? jIntPrism
+          val _number = jsonObject ^|-> at[JsonObject, String, Option[Json]]("number") ^<-? Monocle.some ^<-? jsonInt
           Ok().modifySession(_number.modify(_ + 1))
       })
 
     "Doing nothing" should {
       "not clear or set a session cookie when there is no session" in {
         val request = Request(Method.GET, uri("/id"))
-        val response = sut(request).run
-        response must not(haveSetCookie(config.cookieName) or haveClearedCookie(config.cookieName))
+        sut(request) must returnValue(not(haveSetCookie(config.cookieName) or haveClearedCookie(config.cookieName)))
       }
 
       "not clear a session cookie when one is set" in prop { session: Session =>
         val response = for {
-          cookie <- config.cookie(session.nospaces)
-          request = Request(Method.GET, uri("/id")).putHeaders(CookieHeader(cookie.wrapNel))
+          cookie <- config.cookie(session.noSpaces)
+          request = Request(Method.GET, uri("/id")).putHeaders(CookieHeader(NonEmptyList(cookie)))
           response <- sut(request)
         } yield response
-        response.run must not(haveClearedCookie(config.cookieName))
+        response must returnValue(not(haveClearedCookie(config.cookieName)))
       }
     }
 
     "Creating a session" should {
       "set a session cookie as per mkCookie" in {
         val request = Request(Method.GET, uri("/create"))
-        val response = sut(request).run
-        setCookies(response) must contain(config.cookie(newSession.nospaces).run)
+        // Explicitly uses unsafePerformSync to help with race
+        val response = sut(request).unsafePerformSync
+        setCookies(response) must contain(config.cookie(newSession.noSpaces).unsafePerformSync)
       }
 
       "not include the session data in a readable form in the cookie" in {
         val request = Request(Method.GET, uri("/create"))
-        val response = sut(request).run
-        setCookies(response) must not(contain(beCookieWhoseContentContains("created")))
+        sut(request).map(setCookies) must returnValue(not(contain(beCookieWhoseContentContains("created"))))
       }
     }
 
     "Clearing a session" should {
       "clear session cookie when one is set" in prop { session: Session =>
         val response = for {
-          cookie <- config.cookie(session.nospaces)
-          request = Request(Method.GET, uri("/clear")).putHeaders(CookieHeader(cookie.wrapNel))
+          cookie <- config.cookie(session.noSpaces)
+          request = Request(Method.GET, uri("/clear")).putHeaders(CookieHeader(NonEmptyList(cookie)))
           response <- sut(request)
         } yield response
-        response.run must haveClearedCookie(config.cookieName)
+        response must returnValue(haveClearedCookie(config.cookieName))
       }
 
       "do nothing when one is not set" in {
         val request = Request(Method.GET, uri("/clear"))
         val response = sut(request)
-        response.run must not(haveSetCookie(config.cookieName) or haveClearedCookie(config.cookieName))
+        response must returnValue(not(haveSetCookie(config.cookieName) or haveClearedCookie(config.cookieName)))
       }
     }
 
     "Reading a session" should {
       "read None when there is no session" in {
         val request = Request(Method.GET, uri("/read"))
-        val response = sut(request).run
-        response.status ==== Status.NotFound
+        sut(request) must returnValue(haveStatus(Status.NotFound))
       }
 
       "read None when the session is signed with a different secret" in prop { session: Session =>
         val response = for {
-          cookie <- config.copy(secret = "this is a different secret").cookie(session.nospaces)
-          request = Request(Method.GET, uri("/read")).putHeaders(CookieHeader(cookie.wrapNel))
+          cookie <- config.copy(secret = "this is a different secret").cookie(session.noSpaces)
+          request = Request(Method.GET, uri("/read")).putHeaders(CookieHeader(NonEmptyList(cookie)))
           response <- sut(request)
         } yield response
-        response.run.status ==== Status.NotFound
+        response must returnValue(haveStatus(Status.NotFound))
       }
 
       "read None when the session has expired" in prop { session: Session =>
         val response = for {
-          cookie <- config.copy(maxAge = 0.seconds).cookie(session.nospaces)
-          request = Request(Method.GET, uri("/read")).putHeaders(CookieHeader(cookie.wrapNel))
+          cookie <- config.copy(maxAge = 0.seconds).cookie(session.noSpaces)
+          request = Request(Method.GET, uri("/read")).putHeaders(CookieHeader(NonEmptyList(cookie)))
           response <- sut(request)
         } yield response
-        response.run.status ==== Status.NotFound
+        response must returnValue(haveStatus(Status.NotFound))
       }
 
       "read the session when it exists" in prop { session: Session =>
         val response = for {
-          cookie <- config.cookie(session.nospaces)
-          request = Request(Method.GET, uri("/read")).putHeaders(CookieHeader(cookie.wrapNel))
+          cookie <- config.cookie(session.noSpaces)
+          request = Request(Method.GET, uri("/read")).putHeaders(CookieHeader(NonEmptyList(cookie)))
           response <- sut(request)
         } yield response
-        response.as[Json].run ==== session
+        response must returnValue(haveBody(session))
       }
     }
 
     "Modifying a session" should {
       "update the session when set" in {
+        def unsafeToNel[A](as: List[A]): NonEmptyList[A] =
+          NonEmptyList.nel(as.head, as.tail)
         val response = for {
-          cookie <- config.cookie(Json("number" := 0).nospaces)
-          firstRequest = Request(Method.GET, uri("/modify")).putHeaders(CookieHeader(cookie.wrapNel))
+          cookie <- config.cookie(Json.obj("number" -> 0.asJson).noSpaces)
+          firstRequest = Request(Method.GET, uri("/modify")).putHeaders(CookieHeader(NonEmptyList(cookie)))
           firstResponse <- sut(firstRequest)
           cookies = setCookies(firstResponse)
-          secondRequest = Request(Method.GET, uri("/read")).putHeaders(CookieHeader(cookies.toList.toNel.get))
-          secondResponse <- sut(secondRequest).as[Session]
+          secondRequest = Request(Method.GET, uri("/read")).putHeaders(CookieHeader(unsafeToNel(cookies.toList)))
+          secondResponse <- sut(secondRequest)
         } yield secondResponse
-        response.run ==== Json("number" := 1)
+        response must returnValue(haveBody(Json.obj("number" -> 1.asJson)))
       }
 
       "do nothing when not" in {
         val request = Request(Method.GET, uri("/modify"))
-        val response = sut(request).run
-        response must not(haveSetCookie(config.cookieName) or haveClearedCookie(config.cookieName))
+        sut(request) must returnValue(not(haveSetCookie(config.cookieName) or haveClearedCookie(config.cookieName)))
       }
     }
   }
@@ -206,17 +250,16 @@ object SessionSpec extends Specification with ScalaCheck {
 
     "allow access to the service when a session is set" in prop { session: Session =>
       val response = for {
-        cookie <- config.cookie(session.nospaces)
-        request = Request(Method.GET, uri("/")).putHeaders(CookieHeader(cookie.wrapNel))
+        cookie <- config.cookie(session.noSpaces)
+        request = Request(Method.GET, uri("/")).putHeaders(CookieHeader(NonEmptyList(cookie)))
         response <- sut(request)
       } yield response
-      response.run.status ==== Status.Ok
+      response must returnValue(haveStatus(Status.Ok))
     }
 
     "use the fallback response when a session is not set" in {
       val request = Request(Method.GET, uri("/"))
-      val response = sut(request)
-      response.run.status ==== Status.SeeOther
+      sut(request) must returnValue(haveStatus(Status.SeeOther))
     }
   }
 }
