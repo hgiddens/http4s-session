@@ -110,8 +110,8 @@ final case class SessionConfig(
 }
 
 object Session {
-  private[session] val requestAttr = AttributeKey[Session]("com.github.hgiddens.http4s.session.Session")
-  private[session] val responseAttr = AttributeKey[Option[Session] => Option[Session]]("com.github.hgiddens.http4s.session.Session")
+  val requestAttr = AttributeKey[Session]("com.github.hgiddens.http4s.session.Session")
+  val responseAttr = AttributeKey[Option[Session] => Option[Session]]("com.github.hgiddens.http4s.session.Session")
 
   private[this] def sessionAsCookie(config: SessionConfig, session: Session): Task[Cookie] =
     config.cookie(session.noSpaces)
