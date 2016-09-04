@@ -10,14 +10,14 @@ import monocle.Monocle._
 import org.http4s.{Cookie, EntityEncoder, HttpService, MediaType}
 import org.http4s.dsl._
 import org.http4s.headers.`Content-Type`
-import org.http4s.server.ServerBuilder
+import org.http4s.server.{ServerApp, ServerBuilder}
 import org.http4s.server.blaze.BlazeBuilder
 import scala.concurrent.duration._
 import scala.xml.Elem
 import scalaz.OptionT
-import scalaz.concurrent.{Task, TaskApp}
+import scalaz.concurrent.Task
 
-object Example extends TaskApp {
+object Example extends ServerApp {
   implicit def xmlAsHtmlEncoder: EntityEncoder[Elem] =
     EntityEncoder.stringEncoder(org.http4s.DefaultCharset)
       .contramap[Elem](xml => xml.buildString(false))
@@ -75,12 +75,9 @@ object Example extends TaskApp {
       mountService(Session.sessionRequired(SeeOther(uri("/login")))(protectedService), "/")
   }
 
-  override def runc =
+  def server(args: List[String]) =
     for {
       server <- serverBuilder.start
-      _ <- Task.delay {
-        println("Server started up on port 8080")
-        server.awaitShutdown()
-      }
-    } yield ()
+      _ <- Task.delay("Server started up on port 8080")
+    } yield server
 }
